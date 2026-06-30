@@ -58,16 +58,11 @@ public:
 	UAnimMontage* MeleeMontage;
 
 	/** Max distance for ranged enemies to start shooting */
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Enemy")
+	UPROPERTY(Replicated, EditAnywhere, Category = "Enemy")
 	float ShootRange = 1500.0f;
 
-	/** Current HP — replicated so clients see damage */
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Damage")
-	float CurrentHP = 100.0f;
-
-	/** Death state — replicated for client animation */
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Damage")
-	bool bIsDead = false;
+	// NOTE: CurrentHP inherited from AShooterNPC (public, BlueprintReadOnly)
+	// NOTE: bIsDead inherited from AShooterNPC (protected, set by Die())
 
 protected:
 	FTimerHandle MeleeTimer;
@@ -93,7 +88,7 @@ protected:
 	UFUNCTION()
 	void OnEnemyOverlap(AActor* OverlappedActor, AActor* OtherActor);
 
-	/** Multicast: notify all clients that this enemy died */
+	/** Multicast: notify all clients this enemy died (play effects, ragdoll) */
 	UFUNCTION(NetMulticast, Unreliable)
 	void Multicast_OnDeath();
 
@@ -103,6 +98,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Enemy")
 	bool IsMeleeReady() const { return bMeleeReady; }
+
+	/** Returns whether this enemy is dead (reads the parent's bIsDead) */
+	UFUNCTION(BlueprintPure, Category = "Enemy")
+	bool IsDead() const { return bIsDead; }
 
 	void SetWeaponClass(TSubclassOf<class AShooterWeapon> InClass) { WeaponClass = InClass; }
 };

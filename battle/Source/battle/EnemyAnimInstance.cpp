@@ -71,13 +71,15 @@ void UEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	VerticalSpeed = Velocity.Z;
 	bIsFalling = CachedMovement.IsValid() && CachedMovement->IsFalling();
 
-	// --- Combat data from AEnemyBase ---
+	// --- Combat data ---
 
+	// CurrentHP is inherited from AShooterNPC (public, BlueprintReadOnly)
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(CachedCharacter.Get()))
 	{
-		HPNormalized = FMath::Clamp(Enemy->CurrentHP / 100.0f, 0.0f, 1.0f); // Default max 100
+		// Rough HP normalization (base HP varies by type: 50 Runner, 100 Shooter, 300 Tank)
+		HPNormalized = FMath::Clamp(Enemy->CurrentHP / 100.0f, 0.0f, 1.0f);
 	}
 
-	// Death state: check Dead tag (set by ShooterNPC::Die)
+	// Death state: check Dead tag set by ShooterNPC::Die()
 	bIsDead = CachedCharacter->ActorHasTag(FName("Dead"));
 }

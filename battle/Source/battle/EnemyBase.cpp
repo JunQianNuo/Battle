@@ -41,8 +41,6 @@ AEnemyBase::AEnemyBase()
 		GetMesh()->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
 	}
 
-	// AnimBP set per-type in SpawnEnemyOfType (melee->Unarmed, ranged->Pistol)
-
 	// Prevent mesh from blocking AI navigation
 	GetMesh()->SetCanEverAffectNavigation(false);
 	GetCapsuleComponent()->SetCanEverAffectNavigation(true);
@@ -60,8 +58,6 @@ void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifeti
 	DOREPLIFETIME(AEnemyBase, MeleeRange);
 	DOREPLIFETIME(AEnemyBase, MeleeKnockback);
 	DOREPLIFETIME(AEnemyBase, ShootRange);
-	DOREPLIFETIME(AEnemyBase, CurrentHP);
-	DOREPLIFETIME(AEnemyBase, bIsDead);
 }
 
 FVector AEnemyBase::GetWeaponTargetLocation()
@@ -93,7 +89,7 @@ void AEnemyBase::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// Server-only AI logic
+	// Server-only AI logic. bIsDead is inherited from AShooterNPC (set by Die())
 	if (!HasAuthority() || bIsDead) return;
 
 	// Void death
@@ -246,25 +242,22 @@ void AEnemyBase::Die()
 	}
 
 	Super::Die();
+	// After Super::Die(), AShooterNPC::bIsDead is set to true
 
-	// Sync replicated death flag (EnemyBase shadows parent's bIsDead)
-	bIsDead = true;
-
-	// Notify clients for death effects
+	// Notify all clients for death effects (ragdoll, etc.)
 	Multicast_OnDeath();
 }
 
 void AEnemyBase::Multicast_OnDeath_Implementation()
 {
-	// Play death effects on all clients
+	// Runs on all clients when server calls it.
+	// The parent's Die() already handles ragdoll on the server.
+	// Clients need to ragdoll too if this is a replicated actor.
 	if (!HasAuthority())
 	{
-		// Client-side death cleanup: disable movement, enable ragdoll
-		if (GetCharacterMovement())
-		{
-			GetCharacterMovement()->StopMovementImmediately();
-			GetCharacterMovement()->DisableMovement();
-		}
+		// Trigger client-side death visuals
+		GetMesh()->SetSimulatePhysics(true);
+		GetMesh()->SetPhysicsBlendWeight(1.0f);
 	}
 }
 
@@ -310,7 +303,6 @@ void AEnemyBase::DoMeleeAttack(AActor* Target)
 		TargetChar->GetCharacterMovement()->AddImpulse(KnockbackDir * MeleeKnockback, true);
 	}
 
-	// Start cooldown
 	GetWorld()->GetTimerManager().SetTimer(
 		MeleeTimer, this, &AEnemyBase::ResetMeleeCooldown, MeleeCooldown, false);
 }
