@@ -14,11 +14,10 @@ void UEnemyAnimInstance::NativeInitializeAnimation()
 {
 	Super::NativeInitializeAnimation();
 
-	// Cache pointers to avoid repeated casts
 	if (AActor* Owner = GetOwningActor())
 	{
 		CachedCharacter = Cast<ACharacter>(Owner);
-		if (CachedCharacter.IsValid())
+		if (CachedCharacter != nullptr)
 		{
 			CachedMovement = CachedCharacter->GetCharacterMovement();
 		}
@@ -30,19 +29,19 @@ void UEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	Super::NativeUpdateAnimation(DeltaSeconds);
 
 	// Refresh cached pointers if pawn changed
-	if (!CachedCharacter.IsValid())
+	if (!CachedCharacter)
 	{
 		if (APawn* Pawn = TryGetPawnOwner())
 		{
 			CachedCharacter = Cast<ACharacter>(Pawn);
-			if (CachedCharacter.IsValid())
+			if (CachedCharacter != nullptr)
 			{
 				CachedMovement = CachedCharacter->GetCharacterMovement();
 			}
 		}
 	}
 
-	if (!CachedCharacter.IsValid())
+	if (!CachedCharacter)
 	{
 		return;
 	}
@@ -69,14 +68,12 @@ void UEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	// Vertical movement
 	VerticalSpeed = Velocity.Z;
-	bIsFalling = CachedMovement.IsValid() && CachedMovement->IsFalling();
+	bIsFalling = (CachedMovement != nullptr) && CachedMovement->IsFalling();
 
 	// --- Combat data ---
 
-	// CurrentHP is inherited from AShooterNPC (public, BlueprintReadOnly)
 	if (AEnemyBase* Enemy = Cast<AEnemyBase>(CachedCharacter.Get()))
 	{
-		// Rough HP normalization (base HP varies by type: 50 Runner, 100 Shooter, 300 Tank)
 		HPNormalized = FMath::Clamp(Enemy->CurrentHP / 100.0f, 0.0f, 1.0f);
 	}
 
