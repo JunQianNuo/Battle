@@ -11,3 +11,7 @@ Content/Python/__pycache__/
 Packaged/
 Build/
 *.py
+.idea/
+Saved/Config/
+setup_android_env.bat
+launch_editor.bat
