@@ -1,11 +1,14 @@
-// EnemyAnimInstance.h - C++ AnimInstance that exposes movement data for enemy ABPs
-// Fixes enemy locomotion: ABPs can read Speed/IsMoving without manual variable setup
+// EnemyAnimInstance.h - C++ AnimInstance that drives enemy locomotion programmatically
+// Exposes Speed/IsMoving for BP use, and plays run/idle animations from C++
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Animation/AnimInstance.h"
 #include "EnemyAnimInstance.generated.h"
+
+class UAnimSequence;
+class UAnimMontage;
 
 UCLASS()
 class BATTLE_API UEnemyAnimInstance : public UAnimInstance
@@ -18,42 +21,64 @@ public:
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
 
-	/** Normalized ground speed (XY magnitude) — drive locomotion BlendSpace */
+	// --- Movement data (BlueprintReadOnly for ABP use) ---
+
 	UPROPERTY(BlueprintReadOnly, Category = "Movement")
 	float Speed = 0.0f;
 
-	/** True when moving faster than walk threshold */
 	UPROPERTY(BlueprintReadOnly, Category = "Movement")
 	bool bIsMoving = false;
 
-	/** Movement direction angle relative to actor forward (degrees) — drive strafe/normal blend */
 	UPROPERTY(BlueprintReadOnly, Category = "Movement")
 	float Direction = 0.0f;
 
-	/** Vertical velocity (positive = jumping/falling up) */
 	UPROPERTY(BlueprintReadOnly, Category = "Movement")
 	float VerticalSpeed = 0.0f;
 
-	/** True when falling */
 	UPROPERTY(BlueprintReadOnly, Category = "Movement")
 	bool bIsFalling = false;
 
-	/** Current HP percentage (0-1), driven from AEnemyBase */
+	// --- Combat data ---
+
 	UPROPERTY(BlueprintReadOnly, Category = "Combat")
 	float HPNormalized = 1.0f;
 
-	/** True when dead (ragdoll/cleanup phase) */
 	UPROPERTY(BlueprintReadOnly, Category = "Combat")
 	bool bIsDead = false;
 
+	/** Set to true for unarmed (melee) enemies — determines which anim set to use */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
+	bool bUseUnarmedAnims = true;
+
 protected:
 	UPROPERTY()
-	TObjectPtr<class ACharacter> CachedCharacter;
+	TObjectPtr<ACharacter> CachedCharacter;
 
 	UPROPERTY()
-	TObjectPtr<class UCharacterMovementComponent> CachedMovement;
+	TObjectPtr<UCharacterMovementComponent> CachedMovement;
 
-	/** Speed threshold to consider as "moving" */
 	UPROPERTY(EditAnywhere, Category = "Movement")
 	float MoveThreshold = 10.0f;
+
+	// --- Cached animation assets ---
+
+	UPROPERTY()
+	TObjectPtr<UAnimSequence> IdleAnim;
+
+	UPROPERTY()
+	TObjectPtr<UAnimSequence> JogAnim;
+
+	// --- Montage state ---
+
+	UPROPERTY()
+	TObjectPtr<UAnimMontage> CurrentMontage;
+
+	bool bWasMoving = false;
+	float BlendWeight = 0.0f;
+
+	/** Load animation assets for the given type */
+	void LoadAnimations(bool bUnarmed);
+
+	/** Play a looping animation on the default slot */
+	void PlayLocomotionAnim(UAnimSequence* Anim);
 };

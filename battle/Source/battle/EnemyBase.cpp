@@ -165,11 +165,15 @@ void AEnemyBase::BeginPlay()
 
 	GetCharacterMovement()->MaxWalkSpeed *= SpeedMultiplier;
 
-	// Set C++ AnimInstance as fallback — provides Speed/IsMoving to animation blueprints
+	// Ensure C++ EnemyAnimInstance is used (spawner should have set it already)
 	if (!GetMesh()->GetAnimInstance())
 	{
 		GetMesh()->SetAnimInstanceClass(UEnemyAnimInstance::StaticClass());
-		UE_LOG(LogTemp, Log, TEXT("[Enemy] Using fallback UEnemyAnimInstance (no BP AnimInstance set)"));
+	}
+
+	if (UEnemyAnimInstance* EAI = Cast<UEnemyAnimInstance>(GetMesh()->GetAnimInstance()))
+	{
+		EAI->bUseUnarmedAnims = bIsMelee;
 	}
 
 	// Slow down enemy fire rate by 50%

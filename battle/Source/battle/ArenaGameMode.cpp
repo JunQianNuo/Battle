@@ -47,7 +47,6 @@ void AArenaGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Set initial menu state on GameState (replicated to all clients)
 	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
 	{
 		GS->bInMenu = true;
@@ -55,7 +54,6 @@ void AArenaGameMode::BeginPlay()
 		GS->bGameOver = false;
 	}
 
-	// Cache spawn points
 	UGameplayStatics::GetAllActorsWithTag(GetWorld(), FName("EnemySpawn"), EnemySpawnPoints);
 	if (EnemySpawnPoints.Num() == 0)
 		UGameplayStatics::GetAllActorsOfClass(GetWorld(), APlayerStart::StaticClass(), EnemySpawnPoints);
@@ -69,7 +67,6 @@ void AArenaGameMode::BeginPlay()
 
 void AArenaGameMode::SpawnWeaponPickups()
 {
-	// Only server spawns pickups
 	if (!HasAuthority()) return;
 
 	UClass* PickupClass = StaticLoadClass(AActor::StaticClass(), nullptr,
@@ -102,17 +99,7 @@ void AArenaGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
 	ConnectedPlayers++;
-
-	// Set menu state for late-joining players
-	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
-	{
-		// Sync current game state to the new player
-		GS->bInMenu = IsInMenu();
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("[Arena] Player joined. Total: %d — %s"),
-		ConnectedPlayers,
-		IsInMenu() ? TEXT("Menu") : TEXT("In-Game"));
+	UE_LOG(LogTemp, Log, TEXT("[Arena] Player joined. Total: %d"), ConnectedPlayers);
 }
 
 void AArenaGameMode::Logout(AController* Exiting)
@@ -139,17 +126,14 @@ void AArenaGameMode::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// Server only
 	if (!HasAuthority()) return;
 
 	APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	if (!PC) return;
 
-	// F-key melee
 	if (PC->WasInputKeyJustPressed(EKeys::F))
 		DoPlayerMelee();
 
-	// Detect player death
 	if (APawn* P = PC->GetPawn())
 	{
 		static const FName DeadTag("Dead");
@@ -168,7 +152,6 @@ void AArenaGameMode::Tick(float DeltaTime)
 		LastPawnWasAlive = bAlive;
 	}
 
-	// Update countdown timer
 	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
 	{
 		if (!GS->bGameWon && !GS->bInMenu)
@@ -250,14 +233,11 @@ void AArenaGameMode::StartGame()
 	ElapsedTime = 0.0f;
 	SpawnCount = 0;
 
-	// Initial enemy batch (server only)
 	SpawnEnemyBatch();
 
-	// Repeat spawn
 	GetWorld()->GetTimerManager().SetTimer(SpawnTimer, this,
 		&AArenaGameMode::SpawnEnemyBatch, SpawnInterval, true, SpawnInterval);
 
-	// Survival victory timer
 	GetWorld()->GetTimerManager().SetTimer(SurvivalTimer, [this]()
 	{
 		if (ABattleGameState* GS = GetGameState<ABattleGameState>())
@@ -265,7 +245,6 @@ void AArenaGameMode::StartGame()
 		GetWorld()->GetTimerManager().ClearTimer(SpawnTimer);
 	}, SurvivalDuration, false);
 
-	// Release mouse from menu
 	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
 	{
 		PC->SetInputMode(FInputModeGameOnly());
@@ -354,58 +333,46 @@ void AArenaGameMode::SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const 
 {
 	if (!HasAuthority()) return;
 
-	static UClass* AnimUnarmed = StaticLoadClass(UAnimInstance::StaticClass(), nullptr,
-		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/ABP_Unarmed.ABP_Unarmed_C"));
-	static UClass* AnimPistol = StaticLoadClass(UAnimInstance::StaticClass(), nullptr,
-		TEXT("/Game/Variant_Shooter/Anims/ABP_TP_Pistol.ABP_TP_Pistol_C"));
-
 	FTransform SpawnTransform(FRotator::ZeroRotator, SpawnLocation);
 	AEnemyBase* Enemy = GetWorld()->SpawnActorDeferred<AEnemyBase>(EnemyClass, SpawnTransform);
 	if (!Enemy) return;
 
-	UClass* SelectedAnimClass = nullptr;
-
 	int32 R = FMath::RandRange(0, 2);
 	if (R == 0)
 	{
+		// Runner — fast melee
 		Enemy->EnemyType = EEnemyType::Runner;
 		Enemy->ScoreValue = 100;
 		Enemy->SpeedMultiplier = 1.0f;
 		Enemy->bIsMelee = true;
 		Enemy->MeleeDamage = 15.0f;
 		Enemy->CurrentHP = 50.0f;
-		SelectedAnimClass = AnimUnarmed;
 	}
 	else if (R == 1)
 	{
+		// Shooter — ranged pistol
 		Enemy->EnemyType = EEnemyType::Shooter;
 		Enemy->ScoreValue = 150;
 		Enemy->SpeedMultiplier = 0.6f;
 		Enemy->bIsMelee = false;
 		Enemy->CurrentHP = 100.0f;
-		SelectedAnimClass = AnimPistol;
 		static UClass* WC = StaticLoadClass(AShooterWeapon::StaticClass(), nullptr,
 			TEXT("/Game/Variant_Shooter/Blueprints/Pickups/Weapons/BP_ShooterWeapon_Pistol.BP_ShooterWeapon_Pistol_C"));
 		if (WC) Enemy->SetWeaponClass(WC);
 	}
 	else
 	{
+		// Tank — slow heavy melee
 		Enemy->EnemyType = EEnemyType::Tank;
 		Enemy->ScoreValue = 300;
 		Enemy->SpeedMultiplier = 0.5f;
 		Enemy->bIsMelee = true;
 		Enemy->MeleeDamage = 40.0f;
 		Enemy->CurrentHP = 300.0f;
-		SelectedAnimClass = AnimUnarmed;
 	}
 
-	if (SelectedAnimClass)
-		Enemy->GetMesh()->SetAnimInstanceClass(SelectedAnimClass);
-	else
-	{
-		Enemy->GetMesh()->SetAnimInstanceClass(UEnemyAnimInstance::StaticClass());
-		UE_LOG(LogTemp, Warning, TEXT("[Arena] Fallback UEnemyAnimInstance for type %d"), (int32)Enemy->EnemyType);
-	}
+	// C++ EnemyAnimInstance drives locomotion (idle/jog) programmatically — no BP ABP needed
+	Enemy->GetMesh()->SetAnimInstanceClass(UEnemyAnimInstance::StaticClass());
 
 	Enemy->FinishSpawning(SpawnTransform);
 
