@@ -15,3 +15,9 @@ Build/
 Saved/Config/
 setup_android_env.bat
 launch_editor.bat
+.mcp.json
+.vsconfig
+*.zip
+TODO.md
+DefaultEditorPerProjectUserSettings.ini
+SymbolizeCrashDump*.bat
