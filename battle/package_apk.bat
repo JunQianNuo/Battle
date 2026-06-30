@@ -32,7 +32,7 @@ call "D:\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun ^
   -stage ^
   -pak ^
   -archive ^
-  -archivedirectory="D:\PROJECT\battle\phone" ^
+  -archivedirectory="D:\PROJECT\battle\android" ^
   -cookflavor=ASTC ^
   -build ^
   -package ^
