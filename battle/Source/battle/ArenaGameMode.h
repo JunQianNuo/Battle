@@ -1,4 +1,5 @@
 // ArenaGameMode.h - Arena survival: survive 2 minutes, enemies respawn every 20s
+// Supports Listen Server multiplayer via ServerTravel/ClientTravel
 
 #pragma once
 
@@ -38,10 +39,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Survival")
 	int32 MaxPlayers = 4;
 
-	// Menu state: true while waiting for player to start
-	UPROPERTY(BlueprintReadOnly, Category = "Game")
-	bool bInMenu = true;
-
 	// === Game flow ===
 
 	UFUNCTION(BlueprintCallable, Category = "Game")
@@ -56,7 +53,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Multiplayer")
 	void JoinGame(const FString& ServerIP);
 
-	// Console commands: press ~ and type "host" or "join 192.168.x.x"
+	// Console commands
 	UFUNCTION(Exec)
 	void Host(FString MapName = TEXT("Lvl_Shooter")) { HostGame(MapName); }
 
@@ -77,8 +74,10 @@ protected:
 
 	void SpawnWeaponPickups();
 	void NotifyDeathPenalty(int32 Points);
+
 public:
-	void DoPlayerMelee(); // public for mobile HUD call
+	void DoPlayerMelee();
+
 protected:
 	void SpawnEnemyBatch();
 	void SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const FVector& SpawnLocation);
@@ -91,6 +90,9 @@ protected:
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Game")
 	void BP_OnGameWon();
+
+	/** Helper: get bInMenu from GameState (replicated) */
+	bool IsInMenu() const;
 
 public:
 	UFUNCTION(BlueprintPure, Category = "Game")

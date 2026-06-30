@@ -1,6 +1,8 @@
 // ArenaGameMode.cpp — survival mode: 2 minutes, enemies every 20s
+// Supports Listen Server multiplayer
 
 #include "ArenaGameMode.h"
+#include "EnemyAnimInstance.h"
 #include "EnemyBase.h"
 #include "BattleGameState.h"
 #include "ArenaPlayerController.h"
@@ -17,8 +19,8 @@
 #include "ShooterWeapon.h"
 #include "Camera/CameraComponent.h"
 #include "BattlHUD.h"
-#include "NavMesh/NavMeshBoundsVolume.h"
 #include "NavigationSystem.h"
+#include "Net/UnrealNetwork.h"
 
 AArenaGameMode::AArenaGameMode()
 {
@@ -26,7 +28,7 @@ AArenaGameMode::AArenaGameMode()
 	GameStateClass = ABattleGameState::StaticClass();
 	PlayerStateClass = ABattlePlayerState::StaticClass();
 	HUDClass = ABattlHUD::StaticClass();
-	// Use BP subclass (C++ class is abstract)
+
 	static ConstructorHelpers::FClassFinder<APlayerController> PCBP(TEXT("/Game/Variant_Shooter/Blueprints/BP_ShooterPlayerController.BP_ShooterPlayerController_C"));
 	if (PCBP.Succeeded()) { PlayerControllerClass = PCBP.Class; }
 
@@ -34,15 +36,32 @@ AArenaGameMode::AArenaGameMode()
 	if (PawnClass.Succeeded()) { DefaultPawnClass = PawnClass.Class; }
 }
 
+bool AArenaGameMode::IsInMenu() const
+{
+	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
+		return GS->bInMenu;
+	return true;
+}
+
 void AArenaGameMode::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Set initial menu state on GameState (replicated to all clients)
+	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
+	{
+		GS->bInMenu = true;
+		GS->bGameWon = false;
+		GS->bGameOver = false;
+	}
 
 	// Cache spawn points
 	UGameplayStatics::GetAllActorsWithTag(GetWorld(), FName("EnemySpawn"), EnemySpawnPoints);
 	if (EnemySpawnPoints.Num() == 0)
 		UGameplayStatics::GetAllActorsOfClass(GetWorld(), APlayerStart::StaticClass(), EnemySpawnPoints);
-	UE_LOG(LogTemp, Log, TEXT("[Arena] %d spawn points found"), EnemySpawnPoints.Num());
+	UE_LOG(LogTemp, Log, TEXT("[Arena] %d spawn points found — %s"),
+		EnemySpawnPoints.Num(),
+		HasAuthority() ? TEXT("Server") : TEXT("Client"));
 
 	SpawnWeaponPickups();
 	BP_OnGameStart();
@@ -50,6 +69,9 @@ void AArenaGameMode::BeginPlay()
 
 void AArenaGameMode::SpawnWeaponPickups()
 {
+	// Only server spawns pickups
+	if (!HasAuthority()) return;
+
 	UClass* PickupClass = StaticLoadClass(AActor::StaticClass(), nullptr,
 		TEXT("/Game/Variant_Shooter/Blueprints/Pickups/BP_ShooterPickup.BP_ShooterPickup_C"));
 	if (!PickupClass) return;
@@ -81,8 +103,16 @@ void AArenaGameMode::PostLogin(APlayerController* NewPlayer)
 	Super::PostLogin(NewPlayer);
 	ConnectedPlayers++;
 
-	// Don't auto-start — player must click START on the menu
-	UE_LOG(LogTemp, Log, TEXT("[ArenaGameMode] Player joined. Total: %d (menu)"), ConnectedPlayers);
+	// Set menu state for late-joining players
+	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
+	{
+		// Sync current game state to the new player
+		GS->bInMenu = IsInMenu();
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[Arena] Player joined. Total: %d — %s"),
+		ConnectedPlayers,
+		IsInMenu() ? TEXT("Menu") : TEXT("In-Game"));
 }
 
 void AArenaGameMode::Logout(AController* Exiting)
@@ -95,7 +125,7 @@ void AArenaGameMode::Logout(AController* Exiting)
 		GetWorld()->GetTimerManager().ClearTimer(SpawnTimer);
 		GetWorld()->GetTimerManager().ClearTimer(SurvivalTimer);
 	}
-	UE_LOG(LogTemp, Log, TEXT("[ArenaGameMode] Player left. Total: %d"), ConnectedPlayers);
+	UE_LOG(LogTemp, Log, TEXT("[Arena] Player left. Total: %d"), ConnectedPlayers);
 }
 
 void AArenaGameMode::RestartPlayer(AController* NewPlayer)
@@ -108,35 +138,40 @@ void AArenaGameMode::RestartPlayer(AController* NewPlayer)
 void AArenaGameMode::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-	if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
-	{
-		if (PC->WasInputKeyJustPressed(EKeys::F))
-			DoPlayerMelee();
 
-		// Detect death: pawn went from alive to tagged Dead
-		if (APawn* P = PC->GetPawn())
+	// Server only
+	if (!HasAuthority()) return;
+
+	APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	if (!PC) return;
+
+	// F-key melee
+	if (PC->WasInputKeyJustPressed(EKeys::F))
+		DoPlayerMelee();
+
+	// Detect player death
+	if (APawn* P = PC->GetPawn())
+	{
+		static const FName DeadTag("Dead");
+		bool bAlive = !P->ActorHasTag(DeadTag);
+		if (!bAlive && LastPawnWasAlive && SpawnedPlayers.Contains(PC))
 		{
-			static const FName DeadTag("Dead");
-			bool bAlive = !P->ActorHasTag(DeadTag);
-			if (!bAlive && LastPawnWasAlive && SpawnedPlayers.Contains(PC))
+			if (ABattlePlayerState* PS = PC->GetPlayerState<ABattlePlayerState>())
 			{
-				if (ABattlePlayerState* PS = PC->GetPlayerState<ABattlePlayerState>())
-				{
-					PS->AddDeath();
-					PS->AddScore(-500);
-				}
-				if (ABattleGameState* GS = GetGameState<ABattleGameState>())
-					GS->AddScore(-500);
-				NotifyDeathPenalty(500);
+				PS->AddDeath();
+				PS->AddScore(-500);
 			}
-			LastPawnWasAlive = bAlive;
+			if (ABattleGameState* GS = GetGameState<ABattleGameState>())
+				GS->AddScore(-500);
+			NotifyDeathPenalty(500);
 		}
+		LastPawnWasAlive = bAlive;
 	}
 
-	// Update countdown timer on GameState
+	// Update countdown timer
 	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
 	{
-		if (!GS->bGameWon)
+		if (!GS->bGameWon && !GS->bInMenu)
 		{
 			ElapsedTime += DeltaTime;
 			GS->RemainingTime = FMath::Max(0.0f, SurvivalDuration - ElapsedTime);
@@ -170,7 +205,6 @@ void AArenaGameMode::DoPlayerMelee()
 	FCollisionQueryParams Q;
 	Q.AddIgnoredActor(P);
 
-	// Play melee animation on first-person and third-person meshes
 	static UAnimSequence* MeleeSeq = Cast<UAnimSequence>(StaticLoadObject(
 		UAnimSequence::StaticClass(), nullptr,
 		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_Attack_01.MM_Attack_01")));
@@ -180,19 +214,16 @@ void AArenaGameMode::DoPlayerMelee()
 		if (BC)
 		{
 			if (USkeletalMeshComponent* FP = BC->GetFirstPersonMesh())
-			{
 				if (UAnimInstance* AI = FP->GetAnimInstance())
 					AI->PlaySlotAnimationAsDynamicMontage(MeleeSeq, DefaultSlot);
-			}
 		}
 		if (ACharacter* C = Cast<ACharacter>(P))
-		{
 			if (UAnimInstance* AI = C->GetMesh()->GetAnimInstance())
 				AI->PlaySlotAnimationAsDynamicMontage(MeleeSeq, DefaultSlot);
-		}
 	}
 
-	if (GetWorld()->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(60.0f), Q))
+	if (GetWorld()->SweepSingleByChannel(Hit, Start, End, FQuat::Identity,
+		ECC_Pawn, FCollisionShape::MakeSphere(60.0f), Q))
 	{
 		if (ACharacter* V = Cast<ACharacter>(Hit.GetActor()))
 		{
@@ -204,12 +235,11 @@ void AArenaGameMode::DoPlayerMelee()
 
 void AArenaGameMode::StartGame()
 {
-	bInMenu = false;
-	ElapsedTime = 0.0f;
-	SpawnCount = 0;
+	if (!HasAuthority()) return;
 
 	if (ABattleGameState* GS = GetGameState<ABattleGameState>())
 	{
+		GS->bInMenu = false;
 		GS->RemainingTime = SurvivalDuration;
 		GS->TotalScore = 0;
 		GS->bGameWon = false;
@@ -217,11 +247,15 @@ void AArenaGameMode::StartGame()
 		GS->EnemiesRemaining = 0;
 	}
 
-	// Initial enemy batch
+	ElapsedTime = 0.0f;
+	SpawnCount = 0;
+
+	// Initial enemy batch (server only)
 	SpawnEnemyBatch();
 
-	// Repeat spawn every SpawnInterval seconds
-	GetWorld()->GetTimerManager().SetTimer(SpawnTimer, this, &AArenaGameMode::SpawnEnemyBatch, SpawnInterval, true, SpawnInterval);
+	// Repeat spawn
+	GetWorld()->GetTimerManager().SetTimer(SpawnTimer, this,
+		&AArenaGameMode::SpawnEnemyBatch, SpawnInterval, true, SpawnInterval);
 
 	// Survival victory timer
 	GetWorld()->GetTimerManager().SetTimer(SurvivalTimer, [this]()
@@ -238,12 +272,14 @@ void AArenaGameMode::StartGame()
 		PC->bShowMouseCursor = false;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[Arena] Survival started: %.0fs, enemies every %.0fs"), SurvivalDuration, SpawnInterval);
+	UE_LOG(LogTemp, Log, TEXT("[Arena] Game started: %.0fs, spawn every %.0fs, %d players"),
+		SurvivalDuration, SpawnInterval, ConnectedPlayers);
 }
 
 void AArenaGameMode::RestartGame()
 {
-	// Clean up remaining enemies
+	if (!HasAuthority()) return;
+
 	for (auto& WeakEnemy : ActiveEnemies)
 	{
 		if (WeakEnemy.IsValid()) WeakEnemy->Destroy();
@@ -258,10 +294,13 @@ void AArenaGameMode::RestartGame()
 
 void AArenaGameMode::SpawnEnemyBatch()
 {
-	SpawnCount++;
-	int32 Count = EnemiesPerSpawn + (SpawnCount - 1); // 4, 5, 6, 7, 8...
+	if (!HasAuthority()) return;
 
-	UE_LOG(LogTemp, Log, TEXT("[Arena] Spawn batch #%d: %d enemies at %.0fs"), SpawnCount, Count, ElapsedTime);
+	SpawnCount++;
+	int32 Count = EnemiesPerSpawn + (SpawnCount - 1);
+
+	UE_LOG(LogTemp, Log, TEXT("[Arena] Spawn batch #%d: %d enemies at %.0fs"),
+		SpawnCount, Count, ElapsedTime);
 
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 	APlayerController* PC = GetWorld()->GetFirstPlayerController();
@@ -313,6 +352,8 @@ void AArenaGameMode::SpawnEnemyBatch()
 
 void AArenaGameMode::SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const FVector& SpawnLocation)
 {
+	if (!HasAuthority()) return;
+
 	static UClass* AnimUnarmed = StaticLoadClass(UAnimInstance::StaticClass(), nullptr,
 		TEXT("/Game/Characters/Mannequins/Anims/Unarmed/ABP_Unarmed.ABP_Unarmed_C"));
 	static UClass* AnimPistol = StaticLoadClass(UAnimInstance::StaticClass(), nullptr,
@@ -321,6 +362,8 @@ void AArenaGameMode::SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const 
 	FTransform SpawnTransform(FRotator::ZeroRotator, SpawnLocation);
 	AEnemyBase* Enemy = GetWorld()->SpawnActorDeferred<AEnemyBase>(EnemyClass, SpawnTransform);
 	if (!Enemy) return;
+
+	UClass* SelectedAnimClass = nullptr;
 
 	int32 R = FMath::RandRange(0, 2);
 	if (R == 0)
@@ -331,7 +374,7 @@ void AArenaGameMode::SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const 
 		Enemy->bIsMelee = true;
 		Enemy->MeleeDamage = 15.0f;
 		Enemy->CurrentHP = 50.0f;
-		if (AnimUnarmed) Enemy->GetMesh()->SetAnimInstanceClass(AnimUnarmed);
+		SelectedAnimClass = AnimUnarmed;
 	}
 	else if (R == 1)
 	{
@@ -340,7 +383,7 @@ void AArenaGameMode::SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const 
 		Enemy->SpeedMultiplier = 0.6f;
 		Enemy->bIsMelee = false;
 		Enemy->CurrentHP = 100.0f;
-		if (AnimPistol) Enemy->GetMesh()->SetAnimInstanceClass(AnimPistol);
+		SelectedAnimClass = AnimPistol;
 		static UClass* WC = StaticLoadClass(AShooterWeapon::StaticClass(), nullptr,
 			TEXT("/Game/Variant_Shooter/Blueprints/Pickups/Weapons/BP_ShooterWeapon_Pistol.BP_ShooterWeapon_Pistol_C"));
 		if (WC) Enemy->SetWeaponClass(WC);
@@ -353,7 +396,15 @@ void AArenaGameMode::SpawnEnemyOfType(TSubclassOf<AEnemyBase> EnemyClass, const 
 		Enemy->bIsMelee = true;
 		Enemy->MeleeDamage = 40.0f;
 		Enemy->CurrentHP = 300.0f;
-		if (AnimUnarmed) Enemy->GetMesh()->SetAnimInstanceClass(AnimUnarmed);
+		SelectedAnimClass = AnimUnarmed;
+	}
+
+	if (SelectedAnimClass)
+		Enemy->GetMesh()->SetAnimInstanceClass(SelectedAnimClass);
+	else
+	{
+		Enemy->GetMesh()->SetAnimInstanceClass(UEnemyAnimInstance::StaticClass());
+		UE_LOG(LogTemp, Warning, TEXT("[Arena] Fallback UEnemyAnimInstance for type %d"), (int32)Enemy->EnemyType);
 	}
 
 	Enemy->FinishSpawning(SpawnTransform);
@@ -373,7 +424,10 @@ void AArenaGameMode::OnEnemyDestroyed(AActor* DestroyedActor)
 
 void AArenaGameMode::HostGame(const FString& MapName)
 {
+	if (!HasAuthority()) return;
+
 	FString Command = MapName + TEXT("?listen");
+	UE_LOG(LogTemp, Log, TEXT("[Arena] Hosting: %s"), *Command);
 	GetWorld()->ServerTravel(Command);
 }
 
@@ -382,6 +436,7 @@ void AArenaGameMode::JoinGame(const FString& ServerIP)
 	APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
 	if (PC)
 	{
+		UE_LOG(LogTemp, Log, TEXT("[Arena] Joining: %s"), *ServerIP);
 		PC->ClientTravel(ServerIP, ETravelType::TRAVEL_Absolute);
 	}
 }

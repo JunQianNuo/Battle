@@ -23,6 +23,7 @@ void ABattleGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(ABattleGameState, bGameOver);
 	DOREPLIFETIME(ABattleGameState, WaveConfigs);
 	DOREPLIFETIME(ABattleGameState, RemainingTime);
+	DOREPLIFETIME(ABattleGameState, bInMenu);
 }
 
 void ABattleGameState::ReportEnemyKilled(AController* Killer, int32 ScoreValue)

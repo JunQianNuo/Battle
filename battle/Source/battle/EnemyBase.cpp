@@ -1,10 +1,13 @@
 // EnemyBase.cpp
 
 #include "EnemyBase.h"
+#include "EnemyAnimInstance.h"
 #include "BattleGameState.h"
 #include "BattlePlayerState.h"
+#include "Net/UnrealNetwork.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -19,6 +22,11 @@
 AEnemyBase::AEnemyBase()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	// Enable network replication for multiplayer
+	bReplicates = true;
+	SetReplicateMovement(true);
+
 	// Use BP AI controller (has StateTree asset configured)
 	static ConstructorHelpers::FClassFinder<AAIController> AICls(TEXT("/Game/Variant_Shooter/Blueprints/AI/BP_ShooterAIController.BP_ShooterAIController_C"));
 	if (AICls.Succeeded()) { AIControllerClass = AICls.Class; }
@@ -40,25 +48,37 @@ AEnemyBase::AEnemyBase()
 	GetCapsuleComponent()->SetCanEverAffectNavigation(true);
 }
 
+void AEnemyBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AEnemyBase, EnemyType);
+	DOREPLIFETIME(AEnemyBase, ScoreValue);
+	DOREPLIFETIME(AEnemyBase, SpeedMultiplier);
+	DOREPLIFETIME(AEnemyBase, bIsMelee);
+	DOREPLIFETIME(AEnemyBase, MeleeDamage);
+	DOREPLIFETIME(AEnemyBase, MeleeRange);
+	DOREPLIFETIME(AEnemyBase, MeleeKnockback);
+	DOREPLIFETIME(AEnemyBase, ShootRange);
+	DOREPLIFETIME(AEnemyBase, CurrentHP);
+	DOREPLIFETIME(AEnemyBase, bIsDead);
+}
+
 FVector AEnemyBase::GetWeaponTargetLocation()
 {
-	// Aim from enemy chest height toward the current target
 	FVector AimSource = GetActorLocation() + FVector(0, 0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
 
 	FVector AimTarget;
 	if (CurrentAimTarget)
 	{
 		AimTarget = CurrentAimTarget->GetActorLocation();
-		// Offset toward target center (chest)
 		AimTarget.Z -= 40.0f;
 	}
 	else
 	{
-		// No target: aim forward from source
 		AimTarget = AimSource + GetActorForwardVector() * AimRange;
 	}
 
-	// Raycast for obstruction
 	FHitResult Hit;
 	FCollisionQueryParams Params;
 	Params.AddIgnoredActor(this);
@@ -72,9 +92,11 @@ FVector AEnemyBase::GetWeaponTargetLocation()
 void AEnemyBase::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Server-only AI logic
 	if (!HasAuthority() || bIsDead) return;
 
-	// Void death: enemies that fall off the map auto-die to prevent stuck waves
+	// Void death
 	if (GetActorLocation().Z < -1000.0f)
 	{
 		Die();
@@ -84,7 +106,7 @@ void AEnemyBase::Tick(float DeltaTime)
 	UWorld* World = GetWorld();
 	const FVector MyLoc = GetActorLocation();
 
-	// Find nearest player (use DistSquared to avoid sqrt)
+	// Find nearest player
 	APawn* Target = nullptr;
 	float NearestSq = FLT_MAX;
 	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
@@ -100,7 +122,7 @@ void AEnemyBase::Tick(float DeltaTime)
 	}
 	if (!Target) return;
 
-	// NavMesh pathfinding (throttled to every 0.5s)
+	// NavMesh pathfinding (throttled)
 	float Now = World->GetTimeSeconds();
 	if (Now - LastPathTime > 0.5f)
 	{
@@ -112,12 +134,12 @@ void AEnemyBase::Tick(float DeltaTime)
 		}
 		else
 		{
-			if (AIC) AIC->StopMovement(); // ranged: stop and shoot
+			if (AIC) AIC->StopMovement();
 		}
 		LastPathTime = Now;
 	}
 
-	// Face target (skip if rotation already matches)
+	// Face target
 	FVector FaceDir = (Target->GetActorLocation() - MyLoc).GetSafeNormal2D();
 	if (!FaceDir.IsNearlyZero())
 	{
@@ -131,7 +153,6 @@ void AEnemyBase::Tick(float DeltaTime)
 	{
 		MeleeAttack(Target);
 	}
-	// Ranged shooting
 	else if (!bIsMelee && Weapon && NearestSq < ShootRange * ShootRange)
 	{
 		if (!bIsShooting) StartShooting(Target);
@@ -146,47 +167,52 @@ void AEnemyBase::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Load and cache melee animation sequence (lazy, created as montage on first attack)
-	// Moved to DoMeleeAttack
-
 	GetCharacterMovement()->MaxWalkSpeed *= SpeedMultiplier;
 
+	// Set C++ AnimInstance as fallback — provides Speed/IsMoving to animation blueprints
+	if (!GetMesh()->GetAnimInstance())
+	{
+		GetMesh()->SetAnimInstanceClass(UEnemyAnimInstance::StaticClass());
+		UE_LOG(LogTemp, Log, TEXT("[Enemy] Using fallback UEnemyAnimInstance (no BP AnimInstance set)"));
+	}
+
 	// Slow down enemy fire rate by 50%
-	if (Weapon) Weapon->SetRefireRate(1.0f); // double refire interval = half fire rate
+	if (Weapon) Weapon->SetRefireRate(1.0f);
 
 	if (bIsMelee)
 	{
 		OnActorBeginOverlap.AddDynamic(this, &AEnemyBase::OnEnemyOverlap);
 	}
 
-	// Force-start StateTree and configure perception
-	if (AShooterAIController* AIC = Cast<AShooterAIController>(GetController()))
+	// Force-start StateTree and configure perception (server only)
+	if (HasAuthority())
 	{
-		// Start StateTree
-		if (UStateTreeAIComponent* ST = AIC->FindComponentByClass<UStateTreeAIComponent>())
+		if (AShooterAIController* AIC = Cast<AShooterAIController>(GetController()))
 		{
-			ST->StartLogic();
-		}
+			if (UStateTreeAIComponent* ST = AIC->FindComponentByClass<UStateTreeAIComponent>())
+			{
+				ST->StartLogic();
+			}
 
-		// Ensure sight perception is configured (some BP setups may not have it)
-		if (UAIPerceptionComponent* Perc = AIC->FindComponentByClass<UAIPerceptionComponent>())
-		{
-			// Add sight sense config
-			UAISenseConfig_Sight* Sight = NewObject<UAISenseConfig_Sight>(Perc);
-			Sight->SightRadius = 3000.0f;
-			Sight->LoseSightRadius = 3500.0f;
-			Sight->PeripheralVisionAngleDegrees = 90.0f;
-			Sight->DetectionByAffiliation.bDetectEnemies = true;
-			Sight->DetectionByAffiliation.bDetectNeutrals = true;
-			Sight->DetectionByAffiliation.bDetectFriendlies = true;
-			Perc->ConfigureSense(*Sight);
-			Perc->RequestStimuliListenerUpdate();
+			if (UAIPerceptionComponent* Perc = AIC->FindComponentByClass<UAIPerceptionComponent>())
+			{
+				UAISenseConfig_Sight* Sight = NewObject<UAISenseConfig_Sight>(Perc);
+				Sight->SightRadius = 3000.0f;
+				Sight->LoseSightRadius = 3500.0f;
+				Sight->PeripheralVisionAngleDegrees = 90.0f;
+				Sight->DetectionByAffiliation.bDetectEnemies = true;
+				Sight->DetectionByAffiliation.bDetectNeutrals = true;
+				Sight->DetectionByAffiliation.bDetectFriendlies = true;
+				Perc->ConfigureSense(*Sight);
+				Perc->RequestStimuliListenerUpdate();
+			}
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[Enemy] Speed=%.0f Melee=%d HP=%.0f Controller=%s"),
+	UE_LOG(LogTemp, Log, TEXT("[Enemy] Speed=%.0f Melee=%d HP=%.0f Controller=%s Replicates=%d"),
 		GetCharacterMovement()->MaxWalkSpeed, (int32)bIsMelee, CurrentHP,
-		GetController() ? *GetController()->GetClass()->GetName() : TEXT("NONE"));
+		GetController() ? *GetController()->GetClass()->GetName() : TEXT("NONE"),
+		(int32)GetIsReplicated());
 }
 
 void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -201,7 +227,6 @@ void AEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 float AEnemyBase::TakeDamage(float Damage, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
-	// Track who last damaged us for kill credit
 	if (EventInstigator)
 	{
 		LastDamager = EventInstigator;
@@ -211,7 +236,7 @@ float AEnemyBase::TakeDamage(float Damage, FDamageEvent const& DamageEvent, ACon
 
 void AEnemyBase::Die()
 {
-	// Report kill to GameState with the correct killer
+	// Report kill to GameState (server only)
 	if (HasAuthority())
 	{
 		if (ABattleGameState* GS = GetWorld()->GetGameState<ABattleGameState>())
@@ -221,6 +246,26 @@ void AEnemyBase::Die()
 	}
 
 	Super::Die();
+
+	// Sync replicated death flag (EnemyBase shadows parent's bIsDead)
+	bIsDead = true;
+
+	// Notify clients for death effects
+	Multicast_OnDeath();
+}
+
+void AEnemyBase::Multicast_OnDeath_Implementation()
+{
+	// Play death effects on all clients
+	if (!HasAuthority())
+	{
+		// Client-side death cleanup: disable movement, enable ragdoll
+		if (GetCharacterMovement())
+		{
+			GetCharacterMovement()->StopMovementImmediately();
+			GetCharacterMovement()->DisableMovement();
+		}
+	}
 }
 
 void AEnemyBase::MeleeAttack(AActor* Target)
@@ -245,7 +290,7 @@ void AEnemyBase::DoMeleeAttack(AActor* Target)
 		if (Seq) AI->PlaySlotAnimationAsDynamicMontage(Seq, FName("DefaultSlot"));
 	}
 
-	// Apply damage (delayed to match animation, using weak refs for safety)
+	// Apply damage (delayed to match animation)
 	TWeakObjectPtr<AEnemyBase> WeakThis(this);
 	TWeakObjectPtr<AActor> WeakTarget(Target);
 	GetWorld()->GetTimerManager().SetTimer(DmgTimer, [WeakThis, WeakTarget]()
@@ -261,7 +306,7 @@ void AEnemyBase::DoMeleeAttack(AActor* Target)
 	if (ACharacter* TargetChar = Cast<ACharacter>(Target))
 	{
 		FVector KnockbackDir = (Target->GetActorLocation() - GetActorLocation()).GetSafeNormal();
-		KnockbackDir.Z = 0.3f; // slight upward
+		KnockbackDir.Z = 0.3f;
 		TargetChar->GetCharacterMovement()->AddImpulse(KnockbackDir * MeleeKnockback, true);
 	}
 
@@ -277,15 +322,11 @@ void AEnemyBase::ResetMeleeCooldown()
 
 void AEnemyBase::OnEnemyOverlap(AActor* OverlappedActor, AActor* OtherActor)
 {
-	// Only deal contact damage to players
 	if (!bIsMelee || !bMeleeReady || !HasAuthority()) return;
 	if (!OtherActor || OtherActor == this) return;
 
-	// Check if it's a player character
 	ACharacter* OtherChar = Cast<ACharacter>(OtherActor);
 	if (!OtherChar) return;
-
-	// Don't damage other enemies
 	if (OtherChar->IsA<AShooterNPC>()) return;
 
 	DoMeleeAttack(OtherChar);

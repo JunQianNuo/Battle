@@ -1,4 +1,4 @@
-// EnemyBase.h - Extended enemy base with type, melee, and scoring support
+// EnemyBase.h - Extended enemy with type, melee, scoring, and network replication
 
 #pragma once
 
@@ -15,33 +15,34 @@ class BATTLE_API AEnemyBase : public AShooterNPC
 public:
 	AEnemyBase();
 	virtual void Tick(float DeltaTime) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual FVector GetWeaponTargetLocation() override;
 
-	// === Enemy configuration ===
+	// === Enemy configuration (replicated) ===
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Enemy")
 	EEnemyType EnemyType = EEnemyType::Shooter;
 
 	/** Score awarded to the killer */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Enemy")
 	int32 ScoreValue = 100;
 
 	/** Movement speed multiplier (1.0 = default) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Enemy")
 	float SpeedMultiplier = 1.0f;
 
 	// === Melee config ===
 
 	/** If true, this enemy uses melee attacks instead of ranged */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Melee")
 	bool bIsMelee = false;
 
 	/** Damage dealt on melee hit */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Melee")
 	float MeleeDamage = 25.0f;
 
 	/** Range for melee attacks */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Melee")
 	float MeleeRange = 150.0f;
 
 	/** Cooldown between melee attacks */
@@ -49,7 +50,7 @@ public:
 	float MeleeCooldown = 1.0f;
 
 	/** Knockback force on melee hit */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Melee")
 	float MeleeKnockback = 500.0f;
 
 	/** Melee attack animation montage */
@@ -57,12 +58,20 @@ public:
 	UAnimMontage* MeleeMontage;
 
 	/** Max distance for ranged enemies to start shooting */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Enemy")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Enemy")
 	float ShootRange = 1500.0f;
+
+	/** Current HP — replicated so clients see damage */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Damage")
+	float CurrentHP = 100.0f;
+
+	/** Death state — replicated for client animation */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Damage")
+	bool bIsDead = false;
 
 protected:
 	FTimerHandle MeleeTimer;
-	FTimerHandle DmgTimer; // melee damage delay timer (cleared on destroy)
+	FTimerHandle DmgTimer;
 	bool bMeleeReady = true;
 	float LastMeleeTime = 0.0f;
 	float LastPathTime = -999.0f;
@@ -75,29 +84,25 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual float TakeDamage(float Damage, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
 
-	/** Override Die to report kill to GameState */
 	virtual void Die() override;
 	virtual bool ShouldIncrementTeamScore() const override { return false; }
 
-	/** Melee attack against a target */
 	void DoMeleeAttack(AActor* Target);
-
-	/** Reset melee cooldown */
 	void ResetMeleeCooldown();
 
-	/** Called when this enemy overlaps with another actor (for melee contact damage) */
 	UFUNCTION()
 	void OnEnemyOverlap(AActor* OverlappedActor, AActor* OtherActor);
 
+	/** Multicast: notify all clients that this enemy died */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_OnDeath();
+
 public:
-	/** Perform a melee attack (called from AI/StateTree) */
 	UFUNCTION(BlueprintCallable, Category = "Enemy")
 	void MeleeAttack(AActor* Target);
 
-	/** Returns true if melee attack is ready */
 	UFUNCTION(BlueprintPure, Category = "Enemy")
 	bool IsMeleeReady() const { return bMeleeReady; }
 
-	/** Set weapon class for ranged enemies */
 	void SetWeaponClass(TSubclassOf<class AShooterWeapon> InClass) { WeaponClass = InClass; }
 };

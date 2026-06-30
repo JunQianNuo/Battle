@@ -63,6 +63,10 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Game")
 	bool bGameOver = false;
 
+	/** True while in menu/lobby — replicated so all clients see the same state */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Game")
+	bool bInMenu = true;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Game")
 	TArray<FWaveConfig> WaveConfigs;
 
